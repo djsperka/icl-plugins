@@ -310,7 +310,7 @@ class RetinaFaceFaceMapper(Plugin):
 
             if ts_ns is not None:
                 self._results[ts_ns] = face_list
-                logger.debug(f"Frame {frame_idx}/{total_frames}, ts={ts_ns}: {len(face_list)} faces")
+                #logger.debug(f"Frame {frame_idx}/{total_frames}, ts={ts_ns}: {len(face_list)} faces")
 
             frame_idx += 1
             if frame_idx % 30 == 0 or frame_idx == total_frames:
