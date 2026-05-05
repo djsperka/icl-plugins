@@ -6,7 +6,7 @@
 #   "onnxruntime>=1.16.0",
 #   "opencv-python>=4.8.0",
 #   "numpy>=1.24.0",
-#   "pl-neon-recording>=1.0.0",
+#   "pl-neon-recording>=0.1.13",
 # ]
 # ///
 """
@@ -155,6 +155,10 @@ class RetinaFaceFaceMapper(Plugin):
         self._draw_overlay: bool = True
         self._results: dict[int, list[dict]] = {}  # ts_ns -> list of face dicts
         self._status: str = "Idle"
+        logger.info(f"[{PLUGIN_NAME}] Initialized with default settings: "
+                    f"confidence_threshold={self._confidence_threshold}, "
+                    f"detection_size={self.detection_size}, "
+                    f"draw_overlay={self._draw_overlay}")   
 
     # ---------------------------------------------------------------- properties
 
@@ -238,7 +242,7 @@ class RetinaFaceFaceMapper(Plugin):
         det_size = det_sizes[min(self._det_size_idx, 2)]
 
         recording = self.recording
-        rec_path = pathlib.Path(recording.rec_dir)
+        rec_path = pathlib.Path(recording._rec_dir)
         logger.info(f"[RetinaFaceFaceMapper] _detect_all_frames started")
         logger.info(f"[RetinaFaceFaceMapper] Recording path: {rec_path}")
         logger.info(f"[RetinaFaceFaceMapper] Files: {[f.name for f in sorted(rec_path.iterdir())]}")
@@ -259,7 +263,7 @@ class RetinaFaceFaceMapper(Plugin):
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         timestamps_ns = self._load_world_timestamps(recording)
 
-        self._results = {}
+        #self._results = {}
         frame_idx = 0
 
         logger.info(f"[RetinaFaceFaceMapper] Processing {total_frames} frames…")
@@ -295,6 +299,8 @@ class RetinaFaceFaceMapper(Plugin):
                     "confidence": round(score, 4),
                 }
 
+                #logger.debug(f"p1=({face_data['p1_x']},{face_data['p1_y']}), p2=({face_data['p2_x']},{face_data['p2_y']}), confidence={face_data['confidence']}")
+                #logger.debug(f)
                 # Unpack 5 landmarks
                 for (col_x, col_y), (lx, ly) in zip(_LM_NAMES, kps):
                     face_data[col_x] = int(lx)
@@ -304,6 +310,7 @@ class RetinaFaceFaceMapper(Plugin):
 
             if ts_ns is not None:
                 self._results[ts_ns] = face_list
+                logger.debug(f"Frame {frame_idx}/{total_frames}, ts={ts_ns}: {len(face_list)} faces")
 
             frame_idx += 1
             if frame_idx % 30 == 0 or frame_idx == total_frames:
@@ -406,7 +413,7 @@ class RetinaFaceFaceMapper(Plugin):
 
     def _cache_dir(self) -> pathlib.Path:
         recording = self.recording
-        rec_path = pathlib.Path(recording.rec_dir)
+        rec_path = pathlib.Path(recording._rec_dir)
         return rec_path / ".neon_player" / "cache" / PLUGIN_NAME
 
     def _on_detection_finished(self) -> None:
@@ -434,7 +441,7 @@ class RetinaFaceFaceMapper(Plugin):
 
     @staticmethod
     def _find_scene_video(recording) -> pathlib.Path | None:
-        rec_path = pathlib.Path(recording.rec_dir)
+        rec_path = pathlib.Path(recording._rec_dir)
         # Neon native naming: "Neon Scene Camera v1 ps1.mp4"
         for mp4 in sorted(rec_path.glob("*.mp4")):
             name = mp4.name.lower()
@@ -451,7 +458,7 @@ class RetinaFaceFaceMapper(Plugin):
         File: "Neon Scene Camera v1 ps1.time"
         Also checks .time_aux and .time_hw as fallbacks.
         """
-        rec_path = pathlib.Path(recording.rec_dir)
+        rec_path = pathlib.Path(recording._rec_dir)
         timestamps_ns: list[int] = []
 
         # Find the scene camera .time file
@@ -499,7 +506,7 @@ class RetinaFaceFaceMapper(Plugin):
           gaze ps1.time – int64 nanosecond timestamps
         Falls back to gaze_200hz if ps1 not present.
         """
-        rec_path = pathlib.Path(recording.rec_dir)
+        rec_path = pathlib.Path(recording._rec_dir)
         result: list[tuple[int, float, float]] = []
 
         # Find gaze .raw and .time files (prefer ps1, fallback to 200hz)
@@ -538,7 +545,7 @@ class RetinaFaceFaceMapper(Plugin):
           fixations ps1.time – int64 nanosecond timestamps (one per fixation)
         Returns list of (fixation_id, start_ns, end_ns, centroid_x, centroid_y).
         """
-        rec_path = pathlib.Path(recording.rec_dir)
+        rec_path = pathlib.Path(recording._rec_dir)
         result: list[tuple[int, int, int, float, float]] = []
 
         raw_file = rec_path / "fixations ps1.raw"
@@ -595,7 +602,7 @@ class RetinaFaceFaceMapper(Plugin):
             return str(recording.unique_id)
         except AttributeError:
             try:
-                return str(recording.rec_dir)
+                return str(recording._rec_dir)
             except AttributeError:
                 return "unknown"
 
