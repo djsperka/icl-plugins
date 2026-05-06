@@ -44,6 +44,7 @@ import numpy as np
 from pupil_labs.neon_player import Plugin, ProgressUpdate, action
 from qt_property_widgets.utilities import property_params
 from PySide6.QtWidgets import QMessageBox
+from PySide6.QtGui import QColor
 
 logger = logging.getLogger(__name__)
 
@@ -56,22 +57,23 @@ GAZE_ON_FACE_FILENAME = "gaze_on_face.csv"
 FIXATIONS_ON_FACE_FILENAME = "fixations_on_face.csv"
 
 FACE_POSITIONS_FIELDNAMES = [
+    "scene_idx",
     "recording id",
-    "timestamp [ns]",
-    "p1 x [px]",
-    "p1 y [px]",
-    "p2 x [px]",
-    "p2 y [px]",
-    "eye left x [px]",
-    "eye left y [px]",
-    "eye right x [px]",
-    "eye right y [px]",
-    "nose x [px]",
-    "nose y [px]",
-    "mouth left x [px]",
-    "mouth left y [px]",
-    "mouth right x [px]",
-    "mouth right y [px]",
+    "ts_ns",
+    "p1_x",
+    "p1_y",
+    "p2_x",
+    "p2_y",
+    "el_x",
+    "el_y",
+    "er_x",
+    "er_y",
+    "n_x",
+    "n_y",
+    "ml_x",
+    "ml_y",
+    "mr_x",
+    "mr_y",
     "confidence",
 ]
 
@@ -91,14 +93,14 @@ FIXATIONS_ON_FACE_FIELDNAMES = [
     "fixation on face",
 ]
 
-# RetinaFace landmark order: left_eye, right_eye, nose, mouth_left, mouth_right
-_LM_NAMES = [
-    ("eye left x [px]", "eye left y [px]"),
-    ("eye right x [px]", "eye right y [px]"),
-    ("nose x [px]", "nose y [px]"),
-    ("mouth left x [px]", "mouth left y [px]"),
-    ("mouth right x [px]", "mouth right y [px]"),
-]
+# # RetinaFace landmark order: left_eye, right_eye, nose, mouth_left, mouth_right
+# _LM_NAMES = [
+#     ("eye left x [px]", "eye left y [px]"),
+#     ("eye right x [px]", "eye right y [px]"),
+#     ("nose x [px]", "nose y [px]"),
+#     ("mouth left x [px]", "mouth left y [px]"),
+#     ("mouth right x [px]", "mouth right y [px]"),
+# ]
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +234,7 @@ class RetinaFaceFaceMapper(Plugin):
     def _detect_all_frames(self) -> T.Generator[ProgressUpdate, None, None]:
         """
         Background generator: iterates all scene video frames, runs RetinaFace,
-        stores results keyed by frame timestamp (ns).
+        stores results keyed by frame index.
         """
         det_sizes = [(320, 320), (640, 640), (1280, 1280)]
         det_size = det_sizes[min(self._det_size_idx, 2)]
@@ -258,6 +260,7 @@ class RetinaFaceFaceMapper(Plugin):
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         timestamps_ns = self._load_world_timestamps(recording)
+
 
         results = {}
         frame_idx = 0
@@ -288,24 +291,36 @@ class RetinaFaceFaceMapper(Plugin):
                 kps = f.kps.astype(int)             # (5, 2): lm in model order
 
                 face_data: dict = {
+                    "scene_idx": frame_idx,
+                    "ts_ns": ts_ns,
                     "p1_x": int(bbox[0]),
                     "p1_y": int(bbox[1]),
                     "p2_x": int(bbox[2]),
                     "p2_y": int(bbox[3]),
                     "confidence": round(score, 4),
+                    "el_x": int(kps[0][0]),
+                    "el_y": int(kps[0][1]),
+                    "er_x": int(kps[1][0]),
+                    "er_y": int(kps[1][1]),
+                    "n_x": int(kps[2][0]),
+                    "n_y": int(kps[2][1]),
+                    "ml_x": int(kps[3][0]),
+                    "ml_y": int(kps[3][1]),
+                    "mr_x": int(kps[4][0]),
+                    "mr_y": int(kps[4][1]),
                 }
 
-                #logger.debug(f"p1=({face_data['p1_x']},{face_data['p1_y']}), p2=({face_data['p2_x']},{face_data['p2_y']}), confidence={face_data['confidence']}")
-                #logger.debug(f)
-                # Unpack 5 landmarks
-                for (col_x, col_y), (lx, ly) in zip(_LM_NAMES, kps):
-                    face_data[col_x] = int(lx)
-                    face_data[col_y] = int(ly)
+                # #logger.debug(f"p1=({face_data['p1_x']},{face_data['p1_y']}), p2=({face_data['p2_x']},{face_data['p2_y']}), confidence={face_data['confidence']}")
+                # #logger.debug(f)
+                # # Unpack 5 landmarks
+                # for (col_x, col_y), (lx, ly) in zip(_LM_NAMES, kps):
+                #     face_data[col_x] = int(lx)
+                #     face_data[col_y] = int(ly)
 
                 face_list.append(face_data)
 
             if ts_ns is not None:
-                results[ts_ns] = face_list
+                results[frame_idx] = face_list
                 #logger.debug(f"Frame {frame_idx}/{total_frames}, ts={ts_ns}: {len(face_list)} faces")
 
             frame_idx += 1
@@ -334,24 +349,17 @@ class RetinaFaceFaceMapper(Plugin):
         recording_id = self._get_recording_id(recording)
 
         face_pos_path = cache_dir / FACE_POSITIONS_FILENAME
+
+        rows_written = 0
         with open(face_pos_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=FACE_POSITIONS_FIELDNAMES)
-            writer.writeheader()
-            for ts_ns in sorted(results.keys()):
-                for face in results[ts_ns]:
-                    row: dict = {
-                        "recording id": recording_id,
-                        "timestamp [ns]": ts_ns,
-                        "p1 x [px]": face["p1_x"],
-                        "p1 y [px]": face["p1_y"],
-                        "p2 x [px]": face["p2_x"],
-                        "p2 y [px]": face["p2_y"],
-                        "confidence": face["confidence"],
-                    }
-                    for col_x, col_y in _LM_NAMES:
-                        row[col_x] = face.get(col_x, "")
-                        row[col_y] = face.get(col_y, "")
-                    writer.writerow(row)
+            writer = csv.DictWriter(fh, fieldnames=None)
+            for idx in sorted(results.keys()):
+                for face in results[idx]:
+                    if rows_written == 0:
+                        writer.fieldnames = face.keys()
+                        writer.writeheader()
+                    writer.writerow(face)
+                    rows_written += 1
 
         logger.info(f"Exported {FACE_POSITIONS_FILENAME} to {cache_dir}")
 
@@ -443,20 +451,7 @@ class RetinaFaceFaceMapper(Plugin):
             reader = csv.DictReader(fh)
             for row in reader:
                 try:
-                    ts_ns = int(row["timestamp [ns]"])
-                    face_data = {
-                        "p1_x": int(row["p1 x [px]"]),
-                        "p1_y": int(row["p1 y [px]"]),
-                        "p2_x": int(row["p2 x [px]"]),
-                        "p2_y": int(row["p2 y [px]"]),
-                        "confidence": float(row["confidence"]),
-                    }
-                    for col_x, col_y in _LM_NAMES:
-                        if row[col_x] and row[col_y]:
-                            face_data[col_x] = int(row[col_x])
-                            face_data[col_y] = int(row[col_y])
-                    results.setdefault(ts_ns, []).append(face_data)
-                    print(f"Loaded face at ts={ts_ns}: {face_data}")
+                    results.setdefault(int(row["scene_idx"]), []).append(row)
                 except Exception as exc:
                     logger.warning(f"Skipping malformed row: {row} ({exc})")
 
@@ -467,20 +462,35 @@ class RetinaFaceFaceMapper(Plugin):
         """Background generator: runs all export steps sequentially."""
         logger.info("export face positions…")
         self.export_face_positions(results)
-        logger.info("export gaze on face…")
-        self.export_gaze_on_face(results)
-        logger.info("export fixations on face…")
-        self.export_fixations_on_face(results)
+        # logger.info("export gaze on face…")
+        # self.export_gaze_on_face(results)
+        # logger.info("export fixations on face…")
+        # self.export_fixations_on_face(results)
 
     def render(self, painter: QPainter, time_in_recording: int) -> None:
         scene_idx = self.get_scene_idx_for_time(time_in_recording)
         #logger.info(f"render called with time_in_recording={time_in_recording}, scene_idx={scene_idx}")
 
         face_positions = self._data.get('face_positions', {})
-        faces = face_positions.get(time_in_recording, [])   
-        logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}")
+        faces = face_positions.get(scene_idx, [])   
         #logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}")
+        if self._draw_overlay and faces:
+            for face in faces:
+                try:
+                    x1, y1 = int(face["p1_x"]), int(face["p1_y"])
+                    x2, y2 = int(face["p2_x"]), int(face["p2_y"])
+                    confidence = float(face.get("confidence", 0))
+                    color = QColor(0, 255, 0) if confidence >= self._confidence_threshold else QColor(255, 0, 0)
+                    painter.setPen(color)
+                    painter.drawRect(x1, y1, x2 - x1, y2 - y1)
 
+                    # Draw landmarks if available
+                    for lm_key in ["el_x", "el_y", "er_x", "er_y", "n_x", "n_y", "ml_x", "ml_y", "mr_x", "mr_y"]:
+                        if lm_key in face:
+                            lx, ly = int(face[lm_key]), int(face[lm_key.replace("_x", "_y")])
+                            painter.drawEllipse(lx - 3, ly - 3, 6, 6)
+                except Exception as exc:
+                    logger.warning(f"Error drawing face overlay: {exc}")
 
 
     # def _export(self) -> T.Generator[ProgressUpdate, None, None]:
