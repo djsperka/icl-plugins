@@ -46,7 +46,6 @@ from qt_property_widgets.utilities import property_params
 from PySide6.QtWidgets import QMessageBox
 from PySide6.QtGui import QColor
 
-logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -198,7 +197,7 @@ class RetinaFaceFaceMapper(Plugin):
             "RetinaFace Detection",
             "RetinaFaceFaceMapper._detect_all_frames",
         )
-        job.finished.connect(self.load_all())
+        job.finished.connect(self.load_all)
 
     # @action
     # def export_csvs(self) -> None:
@@ -240,22 +239,23 @@ class RetinaFaceFaceMapper(Plugin):
         det_size = det_sizes[min(self._det_size_idx, 2)]
 
         recording = self.recording
+        recording_id = self._get_recording_id(recording)
         rec_path = pathlib.Path(recording._rec_dir)
-        logger.info(f"_detect_all_frames started")
-        logger.info(f"Recording path: {rec_path}")
-        logger.info(f"Files: {[f.name for f in sorted(rec_path.iterdir())]}")
+        logging.info(f"_detect_all_frames started")
+        logging.info(f"Recording path: {rec_path}")
+        logging.info(f"Files: {[f.name for f in sorted(rec_path.iterdir())]}")
 
-        logger.info(f"Loading RetinaFace-R50 (det_size={det_size})…")
+        logging.info(f"Loading RetinaFace-R50 (det_size={det_size})…")
         detector = _load_detector(det_size)
 
         scene_video_path = self._find_scene_video(recording)
         if scene_video_path is None:
-            logger.error("No scene video found.")
+            logging.error("No scene video found.")
             return
 
         cap = cv2.VideoCapture(str(scene_video_path))
         if not cap.isOpened():
-            logger.error(f"Cannot open {scene_video_path}")
+            logging.error(f"Cannot open {scene_video_path}")
             return
 
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -265,7 +265,7 @@ class RetinaFaceFaceMapper(Plugin):
         results = {}
         frame_idx = 0
 
-        logger.info(f"Processing {total_frames} frames…")
+        logging.info(f"Processing {total_frames} frames…")
 
         while True:
             ret, bgr = cap.read()
@@ -308,10 +308,11 @@ class RetinaFaceFaceMapper(Plugin):
                     "ml_y": int(kps[3][1]),
                     "mr_x": int(kps[4][0]),
                     "mr_y": int(kps[4][1]),
+                    "recording_id": recording_id,
                 }
 
-                # #logger.debug(f"p1=({face_data['p1_x']},{face_data['p1_y']}), p2=({face_data['p2_x']},{face_data['p2_y']}), confidence={face_data['confidence']}")
-                # #logger.debug(f)
+                # #logging.debug(f"p1=({face_data['p1_x']},{face_data['p1_y']}), p2=({face_data['p2_x']},{face_data['p2_y']}), confidence={face_data['confidence']}")
+                # #logging.debug(f)
                 # # Unpack 5 landmarks
                 # for (col_x, col_y), (lx, ly) in zip(_LM_NAMES, kps):
                 #     face_data[col_x] = int(lx)
@@ -320,8 +321,8 @@ class RetinaFaceFaceMapper(Plugin):
                 face_list.append(face_data)
 
             if ts_ns is not None:
-                results[frame_idx] = face_list
-                #logger.debug(f"Frame {frame_idx}/{total_frames}, ts={ts_ns}: {len(face_list)} faces")
+                results[ts_ns] = face_list
+                #logging.debug(f"Frame {frame_idx}/{total_frames}, ts={ts_ns}: {len(face_list)} faces")
 
             frame_idx += 1
             if frame_idx % 30 == 0 or frame_idx == total_frames:
@@ -329,17 +330,17 @@ class RetinaFaceFaceMapper(Plugin):
                 yield ProgressUpdate(progress)
 
         cap.release()
-        logger.info(
+        logging.info(
             f"Detection done. "
             f"{sum(len(v) for v in results.values())} total detections "
             f"across {len(results)} frames."
         )
 
         # save results to files in the cache directory
-        logger.info("Starting export of results to CSV files…")
+        logging.info("Starting export of results to CSV files…")
         self.export_all(results)
 
-    def export_face_positions(self, results) -> None:
+    def export_face_positions(self, face_positions) -> None:
         """Background generator: writes face_positions.csv from self._results."""
         cache_dir = self._cache_dir()
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -353,18 +354,18 @@ class RetinaFaceFaceMapper(Plugin):
         rows_written = 0
         with open(face_pos_path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=None)
-            for idx in sorted(results.keys()):
-                for face in results[idx]:
+            for ts in sorted(face_positions.keys()):
+                for face in face_positions[ts]:
                     if rows_written == 0:
                         writer.fieldnames = face.keys()
                         writer.writeheader()
                     writer.writerow(face)
                     rows_written += 1
 
-        logger.info(f"Exported {FACE_POSITIONS_FILENAME} to {cache_dir}")
+        logging.info(f"Exported {FACE_POSITIONS_FILENAME} to {cache_dir}")
 
-    def export_gaze_on_face(self, results) -> None:
-        """Background generator: writes gaze_on_face.csv using self._results and gaze data."""
+    def export_gaze_on_face(self, face_positions) -> None:
+        """Background generator: writes gaze_on_face.csv using face position results and gaze data."""
         cache_dir = self._cache_dir()
         cache_dir.mkdir(parents=True, exist_ok=True)
         gaze_pos_path = cache_dir / GAZE_ON_FACE_FILENAME
@@ -373,29 +374,32 @@ class RetinaFaceFaceMapper(Plugin):
         recording_id = self._get_recording_id(recording)
 
         gaze_data = self._load_gaze(recording)  # list of (ts_ns, x_px, y_px)
-        sorted_face_ts = sorted(results.keys())
+        sorted_face_ts = sorted(face_positions.keys())
 
         with open(gaze_pos_path, "w", newline="", encoding="utf-8") as fh:
-            writer = csv.DictWriter(fh, fieldnames=GAZE_ON_FACE_FIELDNAMES)
-            writer.writeheader()
-            for g_ts_ns, gx_px, gy_px in gaze_data:
+            writer = csv.DictWriter(fh, fieldnames=None)
+            rows_written = 0
+            for g_ts_ns, g_x, g_y in gaze_data:
                 # Find nearest scene frame timestamp <= gaze timestamp
                 frame_ts = self._nearest_frame_ts(g_ts_ns, sorted_face_ts)
-                faces_at_frame = results.get(frame_ts, []) if frame_ts is not None else []
-                on_face = _gaze_on_faces(gx_px, gy_px, faces_at_frame)
-                writer.writerow(
-                    {
-                        "recording id": recording_id,
-                        "timestamp [ns]": g_ts_ns,
-                        "gaze x [px]": round(gx_px, 2),
-                        "gaze y [px]": round(gy_px, 2),
-                        "gaze on face": on_face,
-                    }
-                )
+                faces_at_frame = face_positions.get(frame_ts, []) if frame_ts is not None else []
+                on_face = _gaze_on_faces(g_x, g_y, faces_at_frame)
+                row = {   
+                        "recording_id": recording_id,
+                        "g_ts_ns": g_ts_ns,
+                        "g_x": round(g_x, 2),
+                        "g_y": round(g_y, 2),
+                        "gaze_on_face": on_face
+                    } 
+                if rows_written == 0:
+                    writer.fieldnames = row.keys()
+                    writer.writeheader()
+                writer.writerow(row)
+                rows_written += 1
 
-        logger.info(f"Exported {GAZE_ON_FACE_FILENAME} to {cache_dir}")
+        logging.info(f"Exported {GAZE_ON_FACE_FILENAME} to {cache_dir}")
 
-    def export_fixations_on_face(self, results) -> None:
+    def export_fixations_on_face(self, face_positions) -> None:
         """Background generator: writes fixations_on_face.csv using self._results and fixation data."""
         cache_dir = self._cache_dir()
         cache_dir.mkdir(parents=True, exist_ok=True)
@@ -407,7 +411,7 @@ class RetinaFaceFaceMapper(Plugin):
         fixation_data = self._load_fixations(recording)
         # (fixation_id, start_ns, end_ns, centroid_x, centroid_y)
 
-        sorted_face_ts = sorted(results.keys())
+        sorted_face_ts = sorted(face_positions.keys())
 
         with open(fix_path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=FIXATIONS_ON_FACE_FIELDNAMES)
@@ -415,22 +419,38 @@ class RetinaFaceFaceMapper(Plugin):
             for fix_id, start_ns, end_ns, cx, cy in fixation_data:
                 mid_ns = (start_ns + end_ns) // 2
                 frame_ts = self._nearest_frame_ts(mid_ns, sorted_face_ts)
-                faces_at_frame = results.get(frame_ts, []) if frame_ts is not None else []
+                faces_at_frame = face_positions.get(frame_ts, []) if frame_ts is not None else []
                 on_face = _gaze_on_faces(cx, cy, faces_at_frame)
                 writer.writerow(
                     {
-                        "recording id": recording_id,
-                        "fixation id": fix_id,
-                        "start timestamp [ns]": start_ns,
-                        "end timestamp [ns]": end_ns,
-                        "fixation on face": on_face,
+                        "recording_id": recording_id,
+                        "fix_id": fix_id,
+                        "start_ns": start_ns,
+                        "end_ns": end_ns,
+                        "on_face": on_face,
                     }
                 )
-        logger.info(f"Exported {FIXATIONS_ON_FACE_FILENAME} to {cache_dir}")
+        logging.info(f"Exported {FIXATIONS_ON_FACE_FILENAME} to {cache_dir}")
 
 
     def on_recording_loaded(self, recording: NeonRecording) -> None:
         self.load_all()
+
+
+
+    # def on_recording_loaded(self, recording: NeonRecording) -> None:
+    #     if len(recording.blinks) == 0:
+    #         return
+
+    #     self.get_timeline().add_timeline_broken_bar(
+    #         "Blinks", self.recording.blinks[["start_time", "stop_time"]]
+    #     )
+
+    # def on_disabled(self) -> None:
+    #     self.get_timeline().remove_timeline_plot("Blinks")
+
+
+
 
     def load_all(self) -> None:
         """Load detection results from cache and update status.
@@ -441,39 +461,76 @@ class RetinaFaceFaceMapper(Plugin):
         """
         cache_dir = self._cache_dir()
         face_pos_path = cache_dir / FACE_POSITIONS_FILENAME
-        if not face_pos_path.exists():
-            logger.error(f"No results found in cache at {cache_dir}")
-            self._status = "No results found. Run detection first."
+        gaze_on_face_path = cache_dir / GAZE_ON_FACE_FILENAME
+        fixations_on_face_path = cache_dir / FIXATIONS_ON_FACE_FILENAME
+
+        if not face_pos_path.exists() or not gaze_on_face_path.exists() or not fixations_on_face_path.exists():
+            logging.error(f"Missing results in cache at {cache_dir}. Run detection first.")
+            self._status = "Missing face position data. Run detection first."
             return
 
         results = {}
+
+        # face positions first
         with open(face_pos_path, "r", newline="", encoding="utf-8") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
                 try:
-                    results.setdefault(int(row["scene_idx"]), []).append(row)
+                    results.setdefault(int(row["ts_ns"]), []).append(row)
                 except Exception as exc:
-                    logger.warning(f"Skipping malformed row: {row} ({exc})")
+                    logging.warning(f"Skipping malformed row: {row} ({exc})")
 
         self._data['face_positions'] = results
+        self._data['ts_ns_list'] = sorted(results.keys())
+        logging.info(f"Loaded {len(results)} items from face_positions data.")
+
+        # gaze on face next
+        gaze_results = {}
+        with open(gaze_on_face_path, "r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                try:
+                    gaze_results.setdefault(int(row["g_ts_ns"]), []).append(row)
+                except Exception as exc:
+                    logging.warning(f"Skipping malformed gaze row: {row} ({exc})")
+        self._data['gaze_on_face'] = gaze_results
+        logging.info(f"Loaded {len(gaze_results)} items from gaze_on_face data.")
+
+        # load fixations on face last (optional, may not exist)
+        fixation_results = {}
+        with open(fixations_on_face_path, "r", newline="", encoding="utf-8") as fh:
+            reader = csv.DictReader(fh)
+            for row in reader:
+                try:
+                    fixation_results.setdefault(int(row["fixation_id"]), []).append(row)
+                except Exception as exc:
+                    logging.warning(f"Skipping malformed fixation row: {row} ({exc})")
+        self._data['fixations_on_face'] = fixation_results
+        logging.info(f"Loaded {len(fixation_results)} items from fixations_on_face data.")
+
         self._on_detection_finished()
 
-    def export_all(self, results) -> T.Generator[ProgressUpdate, None, None]:
+    def export_all(self, face_positions) -> T.Generator[ProgressUpdate, None, None]:
         """Background generator: runs all export steps sequentially."""
-        logger.info("export face positions…")
-        self.export_face_positions(results)
-        # logger.info("export gaze on face…")
-        # self.export_gaze_on_face(results)
-        # logger.info("export fixations on face…")
-        # self.export_fixations_on_face(results)
+        logging.info("export face positions…")
+        self.export_face_positions(face_positions)
+        logging.info("export gaze on face…")
+        self.export_gaze_on_face(face_positions)
+        logging.info("export fixations on face…")
+        self.export_fixations_on_face(face_positions)
 
     def render(self, painter: QPainter, time_in_recording: int) -> None:
+
+        if self._data is None:
+            return
+
         scene_idx = self.get_scene_idx_for_time(time_in_recording)
-        #logger.info(f"render called with time_in_recording={time_in_recording}, scene_idx={scene_idx}")
+        scene_ts = self._nearest_frame_ts(time_in_recording, self._data.get('ts_ns_list', []))
+        #logging.info(f"render called with time_in_recording={time_in_recording}, scene_idx={scene_idx}")
 
         face_positions = self._data.get('face_positions', {})
-        faces = face_positions.get(scene_idx, [])   
-        #logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}")
+        faces = face_positions.get(scene_ts, [])   
+        #logging.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}, scene_ts={scene_ts}")
         if self._draw_overlay and faces:
             for face in faces:
                 try:
@@ -490,93 +547,8 @@ class RetinaFaceFaceMapper(Plugin):
                             lx, ly = int(face[lm_key]), int(face[lm_key.replace("_x", "_y")])
                             painter.drawEllipse(lx - 3, ly - 3, 6, 6)
                 except Exception as exc:
-                    logger.warning(f"Error drawing face overlay: {exc}")
+                    logging.warning(f"Error drawing face overlay: {exc}")
 
-
-    # def _export(self) -> T.Generator[ProgressUpdate, None, None]:
-    #     """Background generator: writes face_positions.csv and gaze_on_face.csv."""
-    #     cache_dir = self._cache_dir()
-    #     cache_dir.mkdir(parents=True, exist_ok=True)
-    #     recording = self.recording
-
-    #     recording_id = self._get_recording_id(recording)
-
-    #     # --- face_positions.csv ---
-    #     face_pos_path = cache_dir / FACE_POSITIONS_FILENAME
-    #     with open(face_pos_path, "w", newline="", encoding="utf-8") as fh:
-    #         writer = csv.DictWriter(fh, fieldnames=FACE_POSITIONS_FIELDNAMES)
-    #         writer.writeheader()
-    #         for ts_ns in sorted(self._results.keys()):
-    #             for face in self._results[ts_ns]:
-    #                 row: dict = {
-    #                     "recording id": recording_id,
-    #                     "timestamp [ns]": ts_ns,
-    #                     "p1 x [px]": face["p1_x"],
-    #                     "p1 y [px]": face["p1_y"],
-    #                     "p2 x [px]": face["p2_x"],
-    #                     "p2 y [px]": face["p2_y"],
-    #                     "confidence": face["confidence"],
-    #                 }
-    #                 for col_x, col_y in _LM_NAMES:
-    #                     row[col_x] = face.get(col_x, "")
-    #                     row[col_y] = face.get(col_y, "")
-    #                 writer.writerow(row)
-
-    #     yield ProgressUpdate(0.5)
-
-    #     # --- gaze_on_face.csv ---
-    #     gaze_data = self._load_gaze(recording)  # list of (ts_ns, x_px, y_px)
-    #     sorted_face_ts = sorted(self._results.keys())
-
-    #     gaze_pos_path = cache_dir / GAZE_ON_FACE_FILENAME
-    #     with open(gaze_pos_path, "w", newline="", encoding="utf-8") as fh:
-    #         writer = csv.DictWriter(fh, fieldnames=GAZE_ON_FACE_FIELDNAMES)
-    #         writer.writeheader()
-    #         for g_ts_ns, gx_px, gy_px in gaze_data:
-    #             # Find nearest scene frame timestamp <= gaze timestamp
-    #             frame_ts = self._nearest_frame_ts(g_ts_ns, sorted_face_ts)
-    #             faces_at_frame = self._results.get(frame_ts, []) if frame_ts is not None else []
-    #             on_face = _gaze_on_faces(gx_px, gy_px, faces_at_frame)
-    #             writer.writerow(
-    #                 {
-    #                     "recording id": recording_id,
-    #                     "timestamp [ns]": g_ts_ns,
-    #                     "gaze x [px]": round(gx_px, 2),
-    #                     "gaze y [px]": round(gy_px, 2),
-    #                     "gaze on face": on_face,
-    #                 }
-    #             )
-
-    #     yield ProgressUpdate(0.75)
-
-    #     # --- fixations_on_face.csv ---
-    #     # A fixation is "on face" if its gaze centroid (average of all gaze samples
-    #     # during the fixation window) falls inside any face bounding box at the
-    #     # nearest scene frame to the fixation's midpoint timestamp.
-    #     fixation_data = self._load_fixations(recording)
-    #     # (fixation_id, start_ns, end_ns, centroid_x, centroid_y)
-
-    #     fix_path = cache_dir / FIXATIONS_ON_FACE_FILENAME
-    #     with open(fix_path, "w", newline="", encoding="utf-8") as fh:
-    #         writer = csv.DictWriter(fh, fieldnames=FIXATIONS_ON_FACE_FIELDNAMES)
-    #         writer.writeheader()
-    #         for fix_id, start_ns, end_ns, cx, cy in fixation_data:
-    #             mid_ns = (start_ns + end_ns) // 2
-    #             frame_ts = self._nearest_frame_ts(mid_ns, sorted_face_ts)
-    #             faces_at_frame = self._results.get(frame_ts, []) if frame_ts is not None else []
-    #             on_face = _gaze_on_faces(cx, cy, faces_at_frame)
-    #             writer.writerow(
-    #                 {
-    #                     "recording id": recording_id,
-    #                     "fixation id": fix_id,
-    #                     "start timestamp [ns]": start_ns,
-    #                     "end timestamp [ns]": end_ns,
-    #                     "fixation on face": on_face,
-    #                 }
-    #             )
-
-    #     yield ProgressUpdate(1.0)
-    #     logger.info(f"Exported CSVs to {cache_dir}")
 
     # --------------------------------------------------------- private helpers
 
@@ -586,10 +558,11 @@ class RetinaFaceFaceMapper(Plugin):
         return rec_path / ".neon_player" / "cache" / PLUGIN_NAME
 
     def _on_detection_finished(self) -> None:
-        n_frames = len(self._results)
-        n_faces = sum(len(v) for v in self._results.values())
+        face_positions = self._data.get('face_positions', {})
+        n_frames = len(face_positions)
+        n_faces = sum(len(v) for v in face_positions.values())
         self._status = f"Done – {n_faces} detections in {n_frames} frames"
-        logger.info(f"{self._status}")
+        logging.info(f"{self._status}")
 
     def _export_sync(self) -> None:
         """Called after detection job finishes to chain export."""
@@ -650,18 +623,18 @@ class RetinaFaceFaceMapper(Plugin):
                 # Neon .time files: int64 nanosecond timestamps, little-endian
                 arr = np.frombuffer(raw, dtype="<i8")
                 timestamps_ns = arr.tolist()
-                logger.info(
+                logging.info(
                     f"Loaded {len(timestamps_ns)} "
                     f"timestamps from {time_file.name}"
                 )
                 return timestamps_ns
             except Exception as exc:
-                logger.warning(
+                logging.warning(
                     f"Could not read {time_file.name}: {exc}"
                 )
 
         # Log available files to help diagnose if nothing found
-        logger.error(
+        logging.error(
             "No scene .time file found. "
             f"Files: {[f.name for f in sorted(rec_path.iterdir())]}"
         )
@@ -691,7 +664,7 @@ class RetinaFaceFaceMapper(Plugin):
                 break
 
         if raw_file is None:
-            logger.warning("No gaze binary files found")
+            logging.warning("No gaze binary files found")
             return result
 
         try:
@@ -700,9 +673,9 @@ class RetinaFaceFaceMapper(Plugin):
             xy = np.frombuffer(raw_file.read_bytes(), dtype="<f4").reshape(-1, 2)
             for ts, (x, y) in zip(timestamps, xy):
                 result.append((int(ts), float(x), float(y)))
-            logger.info(f"Loaded {len(result)} gaze samples")
+            logging.info(f"Loaded {len(result)} gaze samples")
         except Exception as exc:
-            logger.warning(f"Could not load gaze: {exc}")
+            logging.warning(f"Could not load gaze: {exc}")
 
         return result
 
@@ -721,13 +694,13 @@ class RetinaFaceFaceMapper(Plugin):
         time_file = rec_path / "fixations ps1.time"
 
         if not raw_file.exists() or not time_file.exists():
-            logger.warning("No fixation binary files found")
+            logging.warning("No fixation binary files found")
             return result
 
         try:
             timestamps = np.frombuffer(time_file.read_bytes(), dtype="<i8")
             raw_bytes = raw_file.read_bytes()
-            logger.info("fixations - loaded raw bytes of length {}".format(len(raw_bytes)))
+            logging.info("fixations - loaded raw bytes of length {}".format(len(raw_bytes)))
 
             dtype = np.dtype([
                 ("event_type", "int32"),
@@ -756,9 +729,9 @@ class RetinaFaceFaceMapper(Plugin):
                     float(fix["mean_gaze_x"]),
                     float(fix["mean_gaze_y"]),
                 ))
-            logger.info(f"Loaded {len(result)} fixations")
+            logging.info(f"Loaded {len(result)} fixations")
         except Exception as exc:
-            logger.exception(f"Could not load fixations: {exc}")
+            logging.exception(f"Could not load fixations: {exc}")
 
         return result
 
