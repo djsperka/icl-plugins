@@ -277,6 +277,7 @@ class RetinaFaceFaceMapper(Plugin):
         self._data['face_positions'] = results
         self._data['gaze_on_face'] = self._find_all_gaze_on_face(results, self._load_gaze(recording))
         self._data['fixations_on_face'] = self._find_all_fixations_on_face(results, self._load_fixations(recording))
+        self._data['ts_ns_list'] = timestamps_ns
         # save results to files in the cache directory
         logger.info("Starting export of results to cache directory…")
         self.export(self._cache_dir())
@@ -461,6 +462,8 @@ class RetinaFaceFaceMapper(Plugin):
         self._data['fixations_on_face'] = fixation_on_face
         logger.info(f"Loaded {len(fixation_on_face)} items from fixations_on_face data.")
 
+        self._data['ts_ns_list'] = self._load_world_timestamps(self.recording)
+
         self._on_detection_finished()
 
     @action
@@ -485,8 +488,9 @@ class RetinaFaceFaceMapper(Plugin):
         #logger.info(f"render called with time_in_recording={time_in_recording}, scene_idx={scene_idx}")
 
         face_positions = self._data.get('face_positions', {})
+        #print(f"render: looking up faces for scene_ts={scene_ts} in face_positions with keys: {list(face_positions.keys())[:5]}...")
         faces = face_positions.get(scene_ts, [])   
-        logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}, scene_ts={scene_ts}")
+        #logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}, scene_ts={scene_ts}")
         if self._draw_overlay and faces:
             for face in faces:
                 try:
