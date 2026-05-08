@@ -12,20 +12,27 @@ uses https://www.insightface.ai/research/retinaface
 
 ### Dependencies
 
-* Describe any prerequisites, libraries, OS version, etc., needed before installing program.
-* ex. Windows 10
+* This plugin runs within the Neon Player, so it must be installed and working. I installed from source, following directions [here](https://github.com/pupil-labs/neon-player).
+* I am using python 3.12.12 in a virtual environment. I am working on Ubuntu 24.04.
 
 ### Installing
 
-* How/where to download your program
-* Any modifications needed to be made to files/folders
+* Install Neon Player using instructions [here](https://github.com/pupil-labs/neon-player). You can create a virtual environment in any way, just run the `uv` command from within that venv. 
+* Clone this repository. 
+* Copy the plugin file(s) to the plugin folder in 
+ - (linux) `~/Pupil\ Labs/Neon\ Player/plugins`
+ - (windows) __??? TBD__
 
 ### Executing program
 
-* How to run the program
-* Step-by-step bullets
+* Move to the player's installation directory
+* Activate your virtual env
+* Run the player interactively:
+
 ```
-code blocks for commands
+$ cd home/dan/work/oakes/neon-player
+$ <magic virual env activation command here>
+$ python -m pupil_labs.neon_player <recording folder, or none - will require you to select one>
 ```
 
 ## Help
