@@ -41,10 +41,11 @@ import typing as T
 import cv2
 import numpy as np
 
+from pupil_labs import neon_player
 from pupil_labs.neon_player import Plugin, ProgressUpdate, action
-from qt_property_widgets.utilities import property_params
+from qt_property_widgets.utilities import property_params, action_params
 from PySide6.QtWidgets import QMessageBox
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QIcon, QPainter
 
 logger = logging.getLogger(__name__)
 
@@ -141,6 +142,12 @@ class RetinaFaceFaceMapper(Plugin):
     @draw_overlay.setter
     def draw_overlay(self, value: bool) -> None:
         self._draw_overlay = bool(value)
+
+
+    # action to run from command line
+    def run_and_export(self) -> None:
+        self._detect_all_frames()
+        self.export()
 
     # --------------------------------------------------------------- actions
 
@@ -265,20 +272,25 @@ class RetinaFaceFaceMapper(Plugin):
             f"across {len(results)} frames."
         )
 
+        # save results, get other stuff
+        self._data = {}
+        self._data['face_positions'] = results
+        self._data['gaze_on_face'] = self._find_all_gaze_on_face(results, self._load_gaze(recording))
+        self._data['fixations_on_face'] = self._find_all_fixations_on_face(results, self._load_fixations(recording))
         # save results to files in the cache directory
-        logger.info("Starting export of results to CSV files…")
-        self.export_all(results)
+        logger.info("Starting export of results to cache directory…")
+        self.export(self._cache_dir())
 
-    def export_face_positions(self, face_positions) -> None:
+
+    def export_face_positions(self, face_positions, destination: pathlib.Path = pathlib.Path()) -> None:
         """Background generator: writes face_positions.csv from self._results."""
-        cache_dir = self._cache_dir()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        face_positions_file = cache_dir / FACE_POSITIONS_FILENAME
+        destination.mkdir(parents=True, exist_ok=True)
+        face_positions_file = destination / FACE_POSITIONS_FILENAME
 
         recording = self.recording
         recording_id = self._get_recording_id(recording)
 
-        face_pos_path = cache_dir / FACE_POSITIONS_FILENAME
+        face_pos_path = destination / FACE_POSITIONS_FILENAME
 
         rows_written = 0
         with open(face_pos_path, "w", newline="", encoding="utf-8") as fh:
@@ -291,79 +303,88 @@ class RetinaFaceFaceMapper(Plugin):
                     writer.writerow(face)
                     rows_written += 1
 
-        logger.info(f"Exported {FACE_POSITIONS_FILENAME} to {cache_dir}")
+        logger.info(f"Exported {FACE_POSITIONS_FILENAME} to {destination}")
 
-    def export_gaze_on_face(self, face_positions) -> None:
+    def _find_all_gaze_on_face(self, face_positions, gaze_data) -> dict[int, list[dict]]:
+        """Helper to find gaze on face for all gaze samples, returns dict keyed by gaze timestamp."""
+        recording_id = self._get_recording_id(self.recording)
+        sorted_face_ts = sorted(face_positions.keys())
+        gaze_on_face = {}
+        for g_ts_ns, g_x, g_y in gaze_data:
+            frame_ts = self._nearest_frame_ts(g_ts_ns, sorted_face_ts)
+            faces_at_frame = face_positions.get(frame_ts, []) if frame_ts is not None else []
+            on_face = _gaze_on_faces(g_x, g_y, faces_at_frame)
+            gaze_on_face.setdefault(int(g_ts_ns), []).append({
+                "recording_id": recording_id,
+                "g_ts_ns": g_ts_ns,
+                "g_x": round(g_x, 2),
+                "g_y": round(g_y, 2),
+                "gaze_on_face": on_face,
+            })
+        return gaze_on_face
+
+    def export_gaze_on_face(self, gaze_on_face: dict, destination: pathlib.Path = pathlib.Path()) -> None:
         """Background generator: writes gaze_on_face.csv using face position results and gaze data."""
-        cache_dir = self._cache_dir()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        gaze_pos_path = cache_dir / GAZE_ON_FACE_FILENAME
+        destination.mkdir(parents=True, exist_ok=True)
+        gaze_pos_path = destination / GAZE_ON_FACE_FILENAME
 
         recording = self.recording
         recording_id = self._get_recording_id(recording)
-
-        gaze_data = self._load_gaze(recording)  # list of (ts_ns, x_px, y_px)
-        sorted_face_ts = sorted(face_positions.keys())
+        sorted_gaze_ts = sorted(gaze_on_face.keys())
 
         with open(gaze_pos_path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=None)
             rows_written = 0
-            for g_ts_ns, g_x, g_y in gaze_data:
-                # Find nearest scene frame timestamp <= gaze timestamp
-                frame_ts = self._nearest_frame_ts(g_ts_ns, sorted_face_ts)
-                faces_at_frame = face_positions.get(frame_ts, []) if frame_ts is not None else []
-                on_face = _gaze_on_faces(g_x, g_y, faces_at_frame)
-                row = {   
-                        "recording_id": recording_id,
-                        "g_ts_ns": g_ts_ns,
-                        "g_x": round(g_x, 2),
-                        "g_y": round(g_y, 2),
-                        "gaze_on_face": on_face
-                    } 
-                if rows_written == 0:
-                    writer.fieldnames = row.keys()
-                    writer.writeheader()
-                writer.writerow(row)
-                rows_written += 1
+            for ts in sorted_gaze_ts:
+                for gaze in gaze_on_face[ts]:
+                    if rows_written == 0:
+                        writer.fieldnames = gaze.keys()
+                        writer.writeheader()
+                    writer.writerow(gaze)
+                    rows_written += 1
+        logger.info(f"Exported {GAZE_ON_FACE_FILENAME} to {destination}")
 
-        logger.info(f"Exported {GAZE_ON_FACE_FILENAME} to {cache_dir}")
-
-    def export_fixations_on_face(self, face_positions) -> None:
-        """Background generator: writes fixations_on_face.csv using self._results and fixation data."""
-        cache_dir = self._cache_dir()
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        fix_path = cache_dir / FIXATIONS_ON_FACE_FILENAME
-
-        recording = self.recording
-        recording_id = self._get_recording_id(recording)
-
-        fixation_data = self._load_fixations(recording)
-        # (fixation_id, start_ns, end_ns, centroid_x, centroid_y)
-
+    def _find_all_fixations_on_face(self, face_positions, fixation_data) -> dict[int, list[dict]]:
+        """Helper to find gaze on face for all fixations, returns dict keyed by fixation id."""
+        recording_id = self._get_recording_id(self.recording)
         sorted_face_ts = sorted(face_positions.keys())
+        fixation_on_face = {}
+        for fix_id, start_ns, end_ns, cx, cy in fixation_data:
+            mid_ns = (start_ns + end_ns) // 2
+            frame_ts = self._nearest_frame_ts(mid_ns, sorted_face_ts)
+            faces_at_frame = face_positions.get(frame_ts, []) if frame_ts is not None else []
+            on_face = _gaze_on_faces(cx, cy, faces_at_frame)
+            fixation_on_face.setdefault(int(fix_id), []).append({
+                "recording_id": recording_id,
+                "fix_id": fix_id,
+                "start_ns": start_ns,
+                "end_ns": end_ns,
+                "centroid_x": round(cx, 2),
+                "centroid_y": round(cy, 2),
+                "fixation_on_face": on_face,
+            })
+        return fixation_on_face
+    
+    def export_fixations_on_face(self, fixations_on_face: dict, destination: pathlib.Path = pathlib.Path()) -> None:
+        """Background generator: writes fixations_on_face.csv using self._results and fixation data."""
+        destination.mkdir(parents=True, exist_ok=True)
+        fix_path = destination / FIXATIONS_ON_FACE_FILENAME
+
+        sorted_keys = sorted(fixations_on_face.keys())
 
         rows_written = 0
         with open(fix_path, "w", newline="", encoding="utf-8") as fh:
             writer = csv.DictWriter(fh, fieldnames=None)
-            for fix_id, start_ns, end_ns, cx, cy in fixation_data:
-                mid_ns = (start_ns + end_ns) // 2
-                frame_ts = self._nearest_frame_ts(mid_ns, sorted_face_ts)
-                faces_at_frame = face_positions.get(frame_ts, []) if frame_ts is not None else []
-                on_face = _gaze_on_faces(cx, cy, faces_at_frame)
-                row = {
-                        "recording_id": recording_id,
-                        "fix_id": fix_id,
-                        "start_ns": start_ns,
-                        "end_ns": end_ns,
-                        "on_face": on_face,
-                    }
-                if rows_written == 0:
-                    writer.fieldnames = row.keys()
-                    writer.writeheader()
-                writer.writerow(row)
-                rows_written += 1
+            for key in sorted_keys:
+                rows = fixations_on_face[key]
+                for row in rows:
+                    if rows_written == 0:
+                        writer.fieldnames = row.keys()
+                        writer.writeheader()
+                    writer.writerow(row)
+                    rows_written += 1
 
-        logger.info(f"Exported {FIXATIONS_ON_FACE_FILENAME} to {cache_dir}")
+        logger.info(f"Exported {FIXATIONS_ON_FACE_FILENAME} to {destination}")
 
 
     def on_recording_loaded(self, recording: NeonRecording) -> None:
@@ -402,59 +423,61 @@ class RetinaFaceFaceMapper(Plugin):
             self._status = "Missing face position data. Run detection first."
             return
 
-        results = {}
 
         # face positions first
+        face_positions = {}
         with open(face_pos_path, "r", newline="", encoding="utf-8") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
                 try:
-                    results.setdefault(int(row["ts_ns"]), []).append(row)
+                    face_positions.setdefault(int(row["ts_ns"]), []).append(row)
                 except Exception as exc:
                     logger.warning(f"Skipping malformed row: {row} ({exc})")
 
-        self._data['face_positions'] = results
-        self._data['ts_ns_list'] = sorted(results.keys())
-        logger.info(f"Loaded {len(results)} items from face_positions data.")
+        self._data['face_positions'] = face_positions
+        logger.info(f"Loaded {len(face_positions)} items from face_positions data.")
 
         # gaze on face next
-        gaze_results = {}
+        gaze_on_face = {}
         with open(gaze_on_face_path, "r", newline="", encoding="utf-8") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
                 try:
-                    gaze_results.setdefault(int(row["g_ts_ns"]), []).append(row)
+                    gaze_on_face.setdefault(int(row["g_ts_ns"]), []).append(row)
                 except Exception as exc:
                     logger.warning(f"Skipping malformed gaze row: {row} ({exc})")
-        self._data['gaze_on_face'] = gaze_results
-        logger.info(f"Loaded {len(gaze_results)} items from gaze_on_face data.")
+        self._data['gaze_on_face'] = gaze_on_face
+        logger.info(f"Loaded {len(gaze_on_face)} items from gaze_on_face data.")
 
         # load fixations on face last (optional, may not exist)
-        fixation_results = {}
+        fixation_on_face = {}
         with open(fixations_on_face_path, "r", newline="", encoding="utf-8") as fh:
             reader = csv.DictReader(fh)
             for row in reader:
                 try:
-                    fixation_results.setdefault(int(row["fix_id"]), []).append(row)
+                    fixation_on_face.setdefault(int(row["fix_id"]), []).append(row)
                 except Exception as exc:
                     logger.warning(f"Skipping malformed fixation row: {row} ({exc})")
-        self._data['fixations_on_face'] = fixation_results
-        logger.info(f"Loaded {len(fixation_results)} items from fixations_on_face data.")
+        self._data['fixations_on_face'] = fixation_on_face
+        logger.info(f"Loaded {len(fixation_on_face)} items from fixations_on_face data.")
 
         self._on_detection_finished()
 
-    def export_all(self, face_positions) -> T.Generator[ProgressUpdate, None, None]:
+    @action
+    @action_params(compact=True, icon=QIcon(str(neon_player.asset_path("export.svg"))))
+    def export(self, destination: pathlib.Path = pathlib.Path()) -> T.Generator[ProgressUpdate, None, None]:
         """Background generator: runs all export steps sequentially."""
         logger.info("export face positions…")
-        self.export_face_positions(face_positions)
+        self.export_face_positions(self._data.get('face_positions', {}), destination)
         logger.info("export gaze on face…")
-        self.export_gaze_on_face(face_positions)
+        self.export_gaze_on_face(self._data.get('gaze_on_face', {}), destination)
         logger.info("export fixations on face…")
-        self.export_fixations_on_face(face_positions)
+        self.export_fixations_on_face(self._data.get('fixations_on_face', {}), destination)
 
     def render(self, painter: QPainter, time_in_recording: int) -> None:
 
         if self._data is None:
+            logger.info("render called but no data loaded")
             return
 
         scene_idx = self.get_scene_idx_for_time(time_in_recording)
@@ -463,7 +486,7 @@ class RetinaFaceFaceMapper(Plugin):
 
         face_positions = self._data.get('face_positions', {})
         faces = face_positions.get(scene_ts, [])   
-        #logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}, scene_ts={scene_ts}")
+        logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}, scene_ts={scene_ts}")
         if self._draw_overlay and faces:
             for face in faces:
                 try:
