@@ -145,9 +145,12 @@ class RetinaFaceFaceMapper(Plugin):
 
 
     # action to run from command line
-    def run_and_export(self) -> None:
-        self._detect_all_frames()
-        self.export()
+    @action
+    def detect_and_export(self, destination: pathlib.Path = pathlib.Path()) -> T.Generator[ProgressUpdate, None, None]:
+        print("detect_and_export called with destination:", destination)
+        yield from self._detect_all_frames()
+        print("detect_and_export call export() with destination:", destination)
+        yield from self.export(destination)
 
     # --------------------------------------------------------------- actions
 
@@ -158,7 +161,7 @@ class RetinaFaceFaceMapper(Plugin):
             "RetinaFace Detection",
             "RetinaFaceFaceMapper._detect_all_frames",
         )
-        job.finished.connect(self.load_all)
+        job.finished.connect(self._load_all_from_cache)
 
     # --------------------------------------------------------- background tasks
 
@@ -283,7 +286,7 @@ class RetinaFaceFaceMapper(Plugin):
         self.export(self._cache_dir())
 
 
-    def export_face_positions(self, face_positions, destination: pathlib.Path = pathlib.Path()) -> None:
+    def _export_face_positions(self, face_positions, destination: pathlib.Path = pathlib.Path()) -> None:
         """Background generator: writes face_positions.csv from self._results."""
         destination.mkdir(parents=True, exist_ok=True)
         face_positions_file = destination / FACE_POSITIONS_FILENAME
@@ -324,7 +327,7 @@ class RetinaFaceFaceMapper(Plugin):
             })
         return gaze_on_face
 
-    def export_gaze_on_face(self, gaze_on_face: dict, destination: pathlib.Path = pathlib.Path()) -> None:
+    def _export_gaze_on_face(self, gaze_on_face: dict, destination: pathlib.Path = pathlib.Path()) -> None:
         """Background generator: writes gaze_on_face.csv using face position results and gaze data."""
         destination.mkdir(parents=True, exist_ok=True)
         gaze_pos_path = destination / GAZE_ON_FACE_FILENAME
@@ -366,7 +369,7 @@ class RetinaFaceFaceMapper(Plugin):
             })
         return fixation_on_face
     
-    def export_fixations_on_face(self, fixations_on_face: dict, destination: pathlib.Path = pathlib.Path()) -> None:
+    def _export_fixations_on_face(self, fixations_on_face: dict, destination: pathlib.Path = pathlib.Path()) -> None:
         """Background generator: writes fixations_on_face.csv using self._results and fixation data."""
         destination.mkdir(parents=True, exist_ok=True)
         fix_path = destination / FIXATIONS_ON_FACE_FILENAME
@@ -389,7 +392,7 @@ class RetinaFaceFaceMapper(Plugin):
 
 
     def on_recording_loaded(self, recording: NeonRecording) -> None:
-        self.load_all()
+        self._load_all_from_cache()
 
 
 
@@ -407,7 +410,7 @@ class RetinaFaceFaceMapper(Plugin):
 
 
 
-    def load_all(self) -> None:
+    def _load_all_from_cache(self) -> None:
         """Load detection results from cache and update status.
         Face information is stored in self._data['face_positions'] as a dict:
         {timestamp_ns: [face1_data, face2_data, ...], ...}
@@ -471,11 +474,13 @@ class RetinaFaceFaceMapper(Plugin):
     def export(self, destination: pathlib.Path = pathlib.Path()) -> T.Generator[ProgressUpdate, None, None]:
         """Background generator: runs all export steps sequentially."""
         logger.info("export face positions…")
-        self.export_face_positions(self._data.get('face_positions', {}), destination)
+        self._export_face_positions(self._data.get('face_positions', {}), destination)
+        yield ProgressUpdate(.33)
         logger.info("export gaze on face…")
-        self.export_gaze_on_face(self._data.get('gaze_on_face', {}), destination)
+        self._export_gaze_on_face(self._data.get('gaze_on_face', {}), destination)
+        yield ProgressUpdate(.66)
         logger.info("export fixations on face…")
-        self.export_fixations_on_face(self._data.get('fixations_on_face', {}), destination)
+        self._export_fixations_on_face(self._data.get('fixations_on_face', {}), destination)
 
     def render(self, painter: QPainter, time_in_recording: int) -> None:
 
