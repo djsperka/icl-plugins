@@ -485,12 +485,9 @@ class RetinaFaceFaceMapper(Plugin):
 
         scene_idx = self.get_scene_idx_for_time(time_in_recording)
         scene_ts = self._nearest_frame_ts(time_in_recording, self._data.get('ts_ns_list', []))
-        #logger.info(f"render called with time_in_recording={time_in_recording}, scene_idx={scene_idx}")
 
         face_positions = self._data.get('face_positions', {})
-        #print(f"render: looking up faces for scene_ts={scene_ts} in face_positions with keys: {list(face_positions.keys())[:5]}...")
         faces = face_positions.get(scene_ts, [])   
-        #logger.debug(f"render: found {len(faces)} faces for time_in_recording={time_in_recording}, scene_ts={scene_ts}")
         if self._draw_overlay and faces:
             for face in faces:
                 try:
@@ -501,11 +498,14 @@ class RetinaFaceFaceMapper(Plugin):
                     painter.setPen(color)
                     painter.drawRect(x1, y1, x2 - x1, y2 - y1)
 
-                    # Draw landmarks if available
-                    for lm_key in ["el_x", "el_y", "er_x", "er_y", "n_x", "n_y", "ml_x", "ml_y", "mr_x", "mr_y"]:
-                        if lm_key in face:
-                            lx, ly = int(face[lm_key]), int(face[lm_key.replace("_x", "_y")])
-                            painter.drawEllipse(lx - 3, ly - 3, 6, 6)
+                    # Draw face landmarks. They seem to be always available, but check just in case.
+                    keypairs = [('el_x', 'el_y'), ('er_x', 'er_y'), ('n_x', 'n_y'), ('ml_x', 'ml_y'), ('mr_x', 'mr_y')]
+                    for (xkey, ykey) in keypairs:
+                        if xkey not in face or ykey not in face:
+                            logger.warning(f"Missing landmark keys {xkey} or {ykey} in face data: {face}")
+                            continue
+                        lx, ly = int(face[xkey]), int(face[ykey])
+                        painter.drawEllipse(lx - 3, ly - 3, 6, 6)
                 except Exception as exc:
                     logger.warning(f"Error drawing face overlay: {exc}")
 
